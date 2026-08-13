@@ -1,7 +1,23 @@
+# Python
 .venv/
-node_modules/
-web/dist/
 __pycache__/
 *.pyc
 *.log
+
+# Node
+node_modules/
+web/dist/
+
+# Training artifacts (large / regenerable)
+data/raw/
+ml/checkpoints/
+ml/*.pt
+ml/*.onnx
+
+# uv
+.uv/
+
+# OS
 .DS_Store
+
+# Models we DO commit: final exported ONNX live in models/ for Pi git-pull deploy.

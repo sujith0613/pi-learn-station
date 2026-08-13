@@ -1,2 +1,4 @@
+# Runtime deps only (no torch) - Pi deployment uses the same list + onnxruntime.
 fastapi>=0.138
 uvicorn[standard]>=0.30
+onnxruntime>=1.28
