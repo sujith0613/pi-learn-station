@@ -31,9 +31,9 @@ def _to_strokes(points: list[StrokePoint]) -> segmentation.Stroke:
     return segmentation.Stroke([(p.x, p.y, p.t) for p in points])
 
 
-def _recognize_letter(strokes: list[segmentation.Stroke]) -> list[tuple[str, float]]:
-    """Recognize one letter-group into an ordered (letter, prob) candidate list."""
-    bmp = recognition.normalize_strokes_to_bitmap(strokes)
+def _recognize_letter(letter: segmentation.Letter) -> list[tuple[str, float]]:
+    """Recognize one segmented letter into an ordered (letter, prob) list."""
+    bmp = recognition.normalize_component_to_bitmap(letter.crop)
     return list(recognition.recognize(bmp).items())
 
 
@@ -47,7 +47,7 @@ async def recognize(payload: StrokesIn) -> dict:
     frontend can map suggestions back to words.
     """
     strokes = [_to_strokes(s) for s in payload.strokes]
-    letters = segmentation.group_strokes(strokes)
+    letters = segmentation.segment(strokes)
     words = segmentation.segment_words(letters)
 
     # per-word recognition

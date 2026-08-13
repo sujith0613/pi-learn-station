@@ -75,6 +75,32 @@ def _draw_line(img, x0, y0, x1, y1):
             img[y, x] = 1.0
 
 
+def normalize_component_to_bitmap(crop: np.ndarray, size: int = 28) -> np.ndarray:
+    """Normalize a segmented ink component into a 28x28 bitmap (ink=1).
+
+    Mirrors EMNIST preprocessing: scale the component (aspect-preserving) into
+    a ~20x20 box, then center it in the 28x28 grid with a ~4px border. This
+    matches the glyph distribution the recognizer was trained on.
+    """
+    img = np.zeros((size, size), dtype=np.float32)
+    h, w = crop.shape
+    if h == 0 or w == 0:
+        return img
+    inner = size - 8
+    scale = min(inner / h, inner / w)
+    nh = max(int(round(h * scale)), 1)
+    nw = max(int(round(w * scale)), 1)
+
+    src_y = np.linspace(0, h - 1, nh).astype(int)
+    src_x = np.linspace(0, w - 1, nw).astype(int)
+    small = crop[np.ix_(src_y, src_x)]
+
+    oy = (size - nh) // 2
+    ox = (size - nw) // 2
+    img[oy:oy + nh, ox:ox + nw] = small
+    return img
+
+
 def recognize(bitmap: np.ndarray, top_k: int = TOP_K) -> OrderedDict:
     sess = _get_session()
     inp_name = sess.get_inputs()[0].name
