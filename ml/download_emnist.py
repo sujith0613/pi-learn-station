@@ -69,6 +69,9 @@ def main():
     y_te = _read_mnist_labels(paths["test-labels-idx1-ubyte.gz"])
 
     # Rotate 90 deg (EMNIST is transposed) + flip to correct orientation.
+    # NOTE: shipped model was trained with this k=1 transform; the backend
+    # (recognition.recognize) rotates input 180 deg to compensate so upright
+    # writing classifies correctly. If you change k here, update that too.
     def norm(imgs):
         imgs = np.rot90(imgs, 1, axes=(1, 2))
         imgs = imgs[:, :, ::-1]  # flip horizontally

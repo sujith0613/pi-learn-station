@@ -78,6 +78,11 @@ def _draw_line(img, x0, y0, x1, y1):
 def recognize(bitmap: np.ndarray, top_k: int = TOP_K) -> OrderedDict:
     sess = _get_session()
     inp_name = sess.get_inputs()[0].name
+    # Model was trained with EMNIST transform rot90(k=1)+flipH, which renders
+    # letters upside-down relative to real writing. Feeding an upright bitmap
+    # rotated 180 deg compensates (R_-1*FH == R2*R1*FH), so upright letters
+    # classify correctly without retraining. Remove if retrained w/ k=-1.
+    bitmap = np.rot90(bitmap, 2)
     x = bitmap.reshape(1, 1, 28, 28).astype(np.float32)
     logits = sess.run(None, {inp_name: x})[0][0]
     order = np.argsort(logits)[::-1][:top_k]
