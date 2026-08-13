@@ -1,24 +1,31 @@
 <script lang="ts">
-  // Word Craft — a kind early-reading writing station.
+  // Free-Write — a kind early-writing correction station.
   //
-  // Kids trace/write the target word on a handwriting canvas. Each completed
-  // letter strokes get recognized; uncertain letters become tappable tiles;
-  // the backend char-LM suggests corrections; the word is spoken aloud.
+  // The child writes whatever they choose, freely, on the canvas. The backend
+  // auto-segments the strokes into letters and words, then uses a char-level
+  // language model to suggest the likely intended spelling of each word.
+  // Suggestions are optional, tappable tiles — never blocking.
   import { onMount } from 'svelte'
 
-  const WORDS = ['dog', 'bus', 'bag', 'pig', 'fox', 'sun', 'bed', 'bird', 'box', 'frog']
-
-  let target = WORDS[Math.floor(Math.random() * WORDS.length)]
+  type Pt = { x: number; y: number; t: number }
+  type Word = {
+    start: number
+    end: number
+    greedy: string
+    letters: [string, number][][]
+    suggestion?: { best: string; alternatives: string[] }
+  }
+  type Result = { sentence: string; words: Word[] }
 
   // ---- drawing state -------------------------------------------------------
   let canvasEl: HTMLCanvasElement
   let ctx: CanvasRenderingContext2D | null = null
   let drawing = false
-  let curStroke: number[][] = []   // [[x,y], ...] in CSS px (not device px)
-  let strokes: number[][][] = []   // all strokes of the current word, CSS px
+  let cur: Pt[] = []
+  let strokes: Pt[][] = []   // flat list of strokes (each = points with t)
 
-  const PAD_TOP = 0.18    // fraction of canvas height above the baseline band
-  const BAND = 0.28       // height of one writing band as fraction
+  const PAD_TOP = 0.18
+  const BAND = 0.28
   const STROKE_W = 5
 
   function resize() {
@@ -39,7 +46,6 @@
     const h = canvasEl.height / (window.devicePixelRatio || 1)
     c.clearRect(0, 0, w, h)
 
-    // handwriting guide lines (3 bands => 4 lines)
     c.strokeStyle = 'rgba(107, 97, 84, 0.28)'
     c.lineWidth = 1
     for (let i = 0; i <= 3; i++) {
@@ -49,7 +55,6 @@
       c.lineTo(w, y)
       c.stroke()
     }
-    // midline (dashed) to show where lowercase letters' tops stop
     c.strokeStyle = 'rgba(232, 168, 124, 0.4)'
     c.setLineDash([4, 5])
     c.beginPath()
@@ -58,56 +63,54 @@
     c.stroke()
     c.setLineDash([])
 
-    // ink
     c.strokeStyle = '#2a2620'
     c.lineWidth = STROKE_W
     c.lineCap = 'round'
     c.lineJoin = 'round'
-    for (const stroke of strokes) {
+    for (const st of [...strokes, ...(cur.length ? [cur] : [])]) {
+      if (!st.length) continue
       c.beginPath()
-      stroke.forEach(([x, y], i) => (i === 0 ? c.moveTo(x, y) : c.lineTo(x, y)))
-      c.stroke()
-    }
-    if (curStroke.length) {
-      c.beginPath()
-      curStroke.forEach(([x, y], i) => (i === 0 ? c.moveTo(x, y) : c.lineTo(x, y)))
+      st.forEach((p, i) => (i === 0 ? c.moveTo(p.x, p.y) : c.lineTo(p.x, p.y)))
       c.stroke()
     }
   }
 
-  function pos(ev: PointerEvent): [number, number] {
+  function pos(ev: PointerEvent): Pt {
     const rect = canvasEl.getBoundingClientRect()
-    return [ev.clientX - rect.left, ev.clientY - rect.top]
+    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top, t: ev.timeStamp }
   }
 
   function down(ev: PointerEvent) {
-    if (ev.pointerType !== 'mouse' || ev.isPrimary) drawing = true
-    else drawing = true
+    drawing = true
     canvasEl.setPointerCapture(ev.pointerId)
-    curStroke = [pos(ev)]
+    cur = [pos(ev)]
     redraw()
   }
 
   function move(ev: PointerEvent) {
     if (!drawing) return
-    curStroke.push(pos(ev))
+    cur.push(pos(ev))
     redraw()
   }
 
   function up(_ev: PointerEvent) {
     if (!drawing) return
-    if (curStroke.length) strokes.push(curStroke)
-    curStroke = []
+    if (cur.length) strokes.push(cur)
+    cur = []
     drawing = false
     redraw()
-    check()
+    schedule()
   }
 
-  // ---- recognition ---------------------------------------------------------
+  // ---- recognition (debounced) ---------------------------------------------
+  let result: Result | null = null
   let checking = false
-  let recognized: { letters: string[][] } | null = null
-  let message = ''
-  let success = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  function schedule() {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(check, 500)
+  }
 
   async function check() {
     if (!strokes.length || checking) return
@@ -116,27 +119,42 @@
       const res = await fetch('/api/recognize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strokes: [strokes] }),
+        body: JSON.stringify({ strokes }),
       })
       const data = await res.json()
-      // data.letters: [[[letter, prob], ...], ...]
-      const word = (data.letters as string[][][])
-        .map((pos) => (pos.length ? pos[0][0] : '?'))
-        .join('')
-      message = word === target ? 'That looks like a perfect ' + target + '!' : ''
-      success = word === target
-      recognized = { letters: data.letters.map((p: string[][]) => p.map(([l]) => l as string)) }
-      if (success) speak(target)
+      result = data
     } catch {
-      message = ''
+      /* keep last result */
     } finally {
       checking = false
     }
   }
 
-  // ---- hints & speech ------------------------------------------------------
-  let hintLetter: string | null = null
+  // ---- sentence rendering ---------------------------------------------------
+  let story = ''   // finalized lines, kept as the child writes more
 
+  function sentenceText(): string {
+    if (!result) return ''
+    return result.words.map((w) => w.greedy).join(' ')
+  }
+
+  function applySuggestion(w: Word) {
+    if (!w.suggestion) return
+    w.greedy = w.suggestion.best
+    w.suggestion = undefined
+    result = { ...result!, words: result!.words.map((x) => (x === w ? w : x)) }
+    speak(w.greedy)
+  }
+
+  function nextLine() {
+    const txt = sentenceText()
+    if (txt) story = (story ? story + ' ' : '') + txt
+    strokes = []
+    result = null
+    redraw()
+  }
+
+  // ---- speech ---------------------------------------------------------------
   function speak(text: string) {
     if (!('speechSynthesis' in window)) return
     window.speechSynthesis.cancel()
@@ -147,30 +165,27 @@
     window.speechSynthesis.speak(u)
   }
 
-  function nextWord() {
-    target = WORDS[Math.floor(Math.random() * WORDS.length)]
+  function clearCanvas() {
     strokes = []
-    recognized = null
-    message = ''
-    success = false
-    hintLetter = null
+    result = null
     redraw()
   }
 
-  function clearCanvas() {
-    strokes = []
-    recognized = null
-    message = ''
-    success = false
-    hintLetter = null
-    redraw()
+  function isUncertain(w: Word, ci: number): boolean {
+    const pos = w.letters?.[ci]
+    if (!pos || !pos.length) return true
+    const top = pos[0][1]
+    return top < 0.5 || !!w.suggestion
+  }
+
+  function hasSuggestions(): boolean {
+    return result?.words.some((w) => w.suggestion) ?? false
   }
 
   onMount(() => {
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(canvasEl)
-    speak('Write ' + target)
     return () => ro.disconnect()
   })
 </script>
@@ -181,28 +196,65 @@
 
 <main class="desk">
   <header class="topbar">
-    <div class="brand">Word&nbsp;Craft</div>
+    <div class="brand">Free&nbsp;Write</div>
     <div class="actions">
       <button class="btn ghost" onclick={clearCanvas}>Clear</button>
-      <button class="btn ghost" onclick={() => speak(target)}>Hear</button>
-      <button class="btn solid" onclick={nextWord}>New word</button>
+      <button class="btn solid" onclick={() => speak(sentenceText() || story)}>Hear</button>
+      <button class="btn solid" onclick={nextLine}>New line →</button>
     </div>
   </header>
 
-  <section class="prompt" aria-label="word to write">
-    <span class="prompt-label">Write</span>
-    <div class="tiles">
-      {#each target as ch, i}
-        <button
-          class="tile {hintLetter === ch ? 'hint' : ''}"
-          onclick={() => { hintLetter = ch; speak(ch) }}
-          aria-label="letter {ch}"
-        >
-          {hintLetter === ch ? ch : ''}
-        </button>
+  {#if story}
+    <section class="story" aria-label="what you wrote">
+      <span class="story-label">Your writing</span>
+      <p class="story-text">{story}</p>
+    </section>
+  {/if}
+
+  {#if result}
+    <section class="sentence" aria-label="your words">
+      {#each result.words as w, wi}
+        <span class="wordwrap">
+          <span class="word">
+            {#each w.greedy as ch, ci}
+              <span
+                role="button"
+                tabindex="0"
+                class="letter {isUncertain(w, ci) ? 'uncertain' : ''}"
+                onclick={() => speak(ch)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    speak(ch)
+                  }
+                }}
+                aria-label="letter {ch}"
+                >{ch}</span
+              >
+            {/each}
+          </span>
+          {#if w.suggestion}
+            <button
+              class="sugg"
+              onclick={() => applySuggestion(w)}
+              title="tap to correct"
+              aria-label="suggested word {w.suggestion.best}"
+            >
+              → {w.suggestion.best}
+            </button>
+          {/if}
+          {#if wi < result.words.length - 1}
+            <span class="space"></span>
+          {/if}
+        </span>
       {/each}
+    </section>
+    <div class="hint" aria-live="polite">
+      {#if hasSuggestions()}
+        Tap a <span class="chip">→ word</span> chip to fix it.
+      {/if}
     </div>
-  </section>
+  {/if}
 
   <section class="canvas-wrap" aria-label="writing area">
     <canvas
@@ -217,35 +269,12 @@
     {/if}
   </section>
 
-  {#if recognized}
-    <section class="strip" aria-label="your word">
-      {#each recognized.letters as pos, i}
-        <button
-          class="rcell {pos[0] === target[i] ? 'ok' : 'warn'}"
-          onclick={() => speak(pos[0])}
-          aria-label="letter {pos[0]}"
-        >
-          {pos[0]}
-          {#if pos.length > 1}<span class="alt">{pos.slice(1, 3).join(' ')}</span>{/if}
-        </button>
-      {/each}
-    </section>
-  {/if}
-
-  <section class="feedback" class:success aria-live="polite">
-    {#if message}
-      <div class="bubble">
-        <span class="sticker">{success ? '★' : '·'}</span>
-        <span>{message}</span>
-        {#if success}
-          <button class="btn solid next" onclick={nextWord}>Next word →</button>
-        {/if}
-      </div>
-    {/if}
-  </section>
-
   <footer class="foot">
-    {#if strokes.length}<span>{strokes.length} stroke{strokes.length === 1 ? '' : 's'}</span>{/if}
+    {#if strokes.length}
+      <span>{strokes.length} stroke{strokes.length === 1 ? '' : 's'}</span>
+    {:else}
+      <span>Write anything you like</span>
+    {/if}
     <button class="btn ghost" onclick={clearCanvas}>erase</button>
   </footer>
 </main>
@@ -286,6 +315,7 @@
     font-size: 0.95rem;
     font-weight: 700;
     transition: transform 0.08s ease;
+    cursor: pointer;
   }
 
   .btn:active {
@@ -302,45 +332,94 @@
     color: var(--paper);
   }
 
-  .btn.next {
-    background: var(--sage-deep);
-    color: #fff;
+  .story {
+    background: var(--paper-deep);
+    border-radius: var(--radius-md);
+    padding: 0.7rem 1rem;
   }
 
-  .prompt {
-    text-align: center;
-  }
-
-  .prompt-label {
+  .story-label {
     display: block;
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    margin-bottom: 0.2rem;
+  }
+
+  .story-text {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--sage-deep);
+    line-height: 1.6;
+    word-spacing: 0.35rem;
+  }
+
+  .sentence {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.4rem 0.5rem;
+    min-height: 3.4rem;
+    padding: 0.5rem;
+    background: #fffdf8;
+    border: 2px solid var(--line);
+    border-radius: var(--radius-lg);
+  }
+
+  .wordwrap {
+    display: inline-flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .word {
+    display: inline-flex;
+    gap: 0.1rem;
+  }
+
+  .letter {
+    font-size: 1.7rem;
+    font-weight: 800;
+    color: var(--ink);
+    padding: 0.05rem 0.1rem;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .letter.uncertain {
+    color: var(--coral-deep, #c95f3d);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+  }
+
+  .space {
+    width: 0.75rem;
+  }
+
+  .sugg {
+    border: 2px solid var(--sage);
+    background: var(--sage);
+    color: #fff;
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.95rem;
+    font-weight: 800;
+    cursor: pointer;
+    animation: pop 0.25s ease;
+    align-self: flex-start;
+  }
+
+  .hint {
+    text-align: center;
     font-size: 0.85rem;
     color: var(--ink-soft);
-    margin-bottom: 0.35rem;
+    min-height: 1.2rem;
   }
 
-  .tiles {
-    display: flex;
-    justify-content: center;
-    gap: 0.5rem;
-  }
-
-  .tile {
-    width: 2.6rem;
-    height: 3rem;
-    border-radius: var(--radius-md);
-    border: 2px dashed var(--line);
-    background: var(--paper-deep);
-    font-size: 1.5rem;
+  .hint .chip {
+    color: var(--sage-deep);
     font-weight: 800;
-    color: var(--ink-soft);
-    display: grid;
-    place-items: center;
-  }
-
-  .tile.hint {
-    border-color: var(--coral);
-    background: #fff7ec;
-    color: var(--ink);
   }
 
   .canvas-wrap {
@@ -372,74 +451,6 @@
     animation: pulse 1s infinite alternate;
   }
 
-  .strip {
-    display: flex;
-    justify-content: center;
-    gap: 0.5rem;
-  }
-
-  .rcell {
-    min-width: 2.6rem;
-    height: 3rem;
-    border-radius: var(--radius-md);
-    border: 2px solid var(--line);
-    background: #fff;
-    font-size: 1.5rem;
-    font-weight: 800;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-  }
-
-  .rcell.ok {
-    border-color: var(--sage);
-    color: var(--sage-deep);
-  }
-
-  .rcell.warn {
-    border-color: var(--coral);
-    color: var(--ink);
-  }
-
-  .alt {
-    position: absolute;
-    bottom: -0.3rem;
-    font-size: 0.55rem;
-    color: var(--ink-soft);
-    letter-spacing: 0.05em;
-  }
-
-  .feedback {
-    min-height: 3.4rem;
-    display: grid;
-    place-items: center;
-  }
-
-  .bubble {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    background: var(--paper-deep);
-    border-radius: var(--radius-md);
-    padding: 0.7rem 1.1rem;
-    font-weight: 600;
-  }
-
-  .bubble .sticker {
-    font-size: 1.4rem;
-  }
-
-  .success .bubble {
-    background: var(--sage);
-    color: #fff;
-  }
-
-  .success .bubble .sticker {
-    animation: pop 0.4s ease;
-  }
-
   .foot {
     display: flex;
     justify-content: space-between;
@@ -454,13 +465,13 @@
   }
 
   @keyframes pop {
-    0% { transform: scale(0); }
-    70% { transform: scale(1.3); }
+    0% { transform: scale(0.7); }
+    70% { transform: scale(1.1); }
     100% { transform: scale(1); }
   }
 
   @media (max-width: 480px) {
     .brand { font-size: 0.95rem; }
-    .tile, .rcell { width: 2.2rem; height: 2.6rem; font-size: 1.25rem; }
+    .letter { font-size: 1.3rem; }
   }
 </style>

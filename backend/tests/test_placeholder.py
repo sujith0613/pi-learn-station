@@ -45,3 +45,23 @@ def test_disambiguate_import():
     from app import disambiguate
     assert hasattr(disambiguate, "score_candidate")
     assert hasattr(disambiguate, "disambiguate")
+
+
+def _stroke(pts):
+    return segmentation.Stroke([(x, y, t) for (x, y, t) in pts])
+
+
+def test_segment_words_splits_on_gap():
+    # letter A: two x-overlapping strokes (t=0..50) -> one letter group
+    a1 = _stroke([(0, 0, 0.0), (10, 0, 10.0)])
+    a2 = _stroke([(4, 0, 40.0), (8, 0, 50.0)])
+    # letter B: pen-lift 450ms > 400ms -> new letter, close in x
+    b = _stroke([(20, 0, 500.0), (30, 0, 510.0)])
+    # letter C: far in x from B -> new word
+    c = _stroke([(300, 0, 1000.0), (310, 0, 1010.0)])
+    groups = segmentation.group_strokes([a1, a2, b, c])
+    assert len(groups) == 3  # A, B, C
+    words = segmentation.segment_words(groups)
+    assert len(words) == 2
+    assert len(words[0]) == 2  # A+B in one word
+    assert len(words[1]) == 1  # C alone

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 
 PEN_LIFT_GAP_MS = 400.0
 WIDTH_RATIO_SPLIT = 1.5
+WORD_GAP_FACTOR = 1.0       # inter-word x-gap threshold as multiple of median letter width
+MIN_WORD_GAP_PX = 60.0
 
 
 @dataclass
@@ -67,3 +69,35 @@ def group_strokes(strokes: list[Stroke]) -> list[list[Stroke]]:
 def _split_wide(group: list[Stroke]) -> list[list[Stroke]]:
     # Expanded in Phase 3 with projection analysis; conservative for now.
     return [group]
+
+
+def _bbox_x(strokes: list[Stroke]) -> tuple[float, float]:
+    xs = [p[0] for s in strokes for p in s.points]
+    return (min(xs), max(xs)) if xs else (0.0, 0.0)
+
+
+def segment_words(letter_groups: list[list[Stroke]]) -> list[list[list[Stroke]]]:
+    """Group letter-groups into words.
+
+    A word boundary is a horizontal gap between consecutive letters that
+    exceeds a dynamic threshold (multiple of the median letter width), so it
+    works across canvas sizes and handwriting scales.
+    """
+    if not letter_groups:
+        return []
+
+    widths = [hi - lo for lo, hi in (_bbox_x(g) for g in letter_groups)]
+    median_w = sorted(widths)[len(widths) // 2] if widths else 1.0
+    threshold = max(MIN_WORD_GAP_PX, WORD_GAP_FACTOR * median_w)
+
+    words: list[list[list[Stroke]]] = []
+    cur = [letter_groups[0]]
+    for g in letter_groups[1:]:
+        gap = _bbox_x(g)[0] - _bbox_x(cur[-1])[1]
+        if gap > threshold:
+            words.append(cur)
+            cur = [g]
+        else:
+            cur.append(g)
+    words.append(cur)
+    return words

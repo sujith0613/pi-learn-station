@@ -142,7 +142,7 @@ def disambiguate(sentence: str, word_start: int, word_end: int,
         for nb in conf.neighbours(letter):
             if nb not in {l for l, _ in pos}:
                 continue
-            cand = base[:pos_idx] + nb + base[pos_idx + 1:]
+            cand = greedy[:pos_idx] + nb + greedy[pos_idx + 1:]
             sc = score_candidate(sentence, word_start, word_end, cand)
             if sc > best_score:
                 best_score = sc

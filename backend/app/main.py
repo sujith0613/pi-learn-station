@@ -22,59 +22,73 @@ class StrokePoint(BaseModel):
 
 
 class StrokesIn(BaseModel):
-    strokes: list[list[list[StrokePoint]]]  # [letter][stroke][point]
-    sentence: str = ""                # partial sentence so far (for context)
-    word_start: int = 0
-    word_end: int = 0
+    # Flat list of strokes; each stroke is a list of {x, y, t} points.
+    # Letter AND word boundaries are detected server-side (auto-detect).
+    strokes: list[list[StrokePoint]]
 
 
-def _letters_to_bitmaps(strokes: list[list[StrokePoint]]):
-    """Turn grouped pointer strokes into (letter, bitmap) list."""
-    out = []
-    for group in strokes:
-        seg = [segmentation.Stroke([(p.x, p.y, p.t) for p in s])
-               for s in group]
-        bmp = recognition.normalize_strokes_to_bitmap(seg)
-        out.append(bmp)
-    return out
+def _to_strokes(points: list[StrokePoint]) -> segmentation.Stroke:
+    return segmentation.Stroke([(p.x, p.y, p.t) for p in points])
 
 
-def _recognize_bitmap_list(bitmaps):
-    """Return per-letter candidate lists: [[(c,p),...], ...]."""
-    per_letter = []
-    for bmp in bitmaps:
-        top = recognition.recognize(bmp)
-        per_letter.append(list(top.items()))
-    return per_letter
+def _recognize_letter(strokes: list[segmentation.Stroke]) -> list[tuple[str, float]]:
+    """Recognize one letter-group into an ordered (letter, prob) candidate list."""
+    bmp = recognition.normalize_strokes_to_bitmap(strokes)
+    return list(recognition.recognize(bmp).items())
 
 
 @app.post("/api/recognize")
 async def recognize(payload: StrokesIn) -> dict:
-    """Recognize grouped strokes into a word.
+    """Auto-segment flat strokes into letters and words, then return the
+    greedy spelling of each word plus any LM-assisted suggestion.
 
-    Returns per-letter candidate probs plus any LM-assisted suggestion.
+    Response: {"sentence": str, "words": [{start, end, greedy, letters,
+    suggestion?}]}. `start`/`end` are char offsets into `sentence` so the
+    frontend can map suggestions back to words.
     """
-    bitmaps = _letters_to_bitmaps(payload.strokes)
-    per_letter = _recognize_bitmap_list(bitmaps)
+    strokes = [_to_strokes(s) for s in payload.strokes]
+    letters = segmentation.group_strokes(strokes)
+    words = segmentation.segment_words(letters)
 
-    greedy = "".join(max(pos, key=lambda kv: kv[1])[0] for pos in per_letter)
+    # per-word recognition
+    word_cands = [
+        [_recognize_letter(g) for g in word]  # [letter_group][(letter, prob)]
+        for word in words
+    ]
+    greedy_words = [
+        "".join(max(pos, key=lambda kv: kv[1])[0] for pos in word)
+        for word in word_cands
+    ]
 
-    result: dict[str, Any] = {
-        "word": greedy,
-        "letters": per_letter,
-    }
+    # build the running sentence (single spaces between words)
+    parts: list[str] = []
+    offsets: list[tuple[int, int]] = []  # (start, end) per word in `sentence`
+    cur = 0
+    for gw in greedy_words:
+        parts.append(gw)
+        start = cur
+        end = cur + len(gw)
+        offsets.append((start, end))
+        cur = end + 1  # trailing space slot
+    sentence = " ".join(parts)
 
-    # disambiguate using the char-LM when we have context
-    if payload.sentence and payload.word_end > payload.word_start:
-        ws = payload.word_start
-        we = payload.word_end
-        if we - ws == len(greedy) and payload.sentence[ws:we]:
-            sugg = disambiguate.disambiguate(
-                payload.sentence, ws, we, per_letter)
-            if sugg["best"] != greedy:
-                result["suggestion"] = sugg
+    out_words: list[dict[str, Any]] = []
+    for idx, gw in enumerate(greedy_words):
+        ws, we = offsets[idx]
+        letters_list = [[list(c) for c in pos] for pos in word_cands[idx]]
+        entry: dict[str, Any] = {
+            "start": ws,
+            "end": we,
+            "greedy": gw,
+            "letters": letters_list,
+        }
+        # disambiguate this word using the whole-sentence context
+        sugg = disambiguate.disambiguate(sentence, ws, we, word_cands[idx])
+        if sugg["best"] != gw:
+            entry["suggestion"] = sugg
+        out_words.append(entry)
 
-    return result
+    return {"sentence": sentence, "words": out_words}
 
 
 @app.get("/api/health")
