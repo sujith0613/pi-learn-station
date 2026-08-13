@@ -20,4 +20,10 @@ ml/*.onnx
 # OS
 .DS_Store
 
-# Models we DO commit: final exported ONNX live in models/ for Pi git-pull deploy.
+# Runtime models we DO commit: exported ONNX + json live in models/ for the Pi.
+# PyTorch checkpoints (.pt) are large, regenerable, and unused at runtime.
+models/**/*.pt
+models/*.pt
+
+# Large build/deploy artifacts (regenerate or re-save)
+dist/

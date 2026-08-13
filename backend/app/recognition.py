@@ -11,7 +11,7 @@ import numpy as np
 import onnxruntime as ort
 
 MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "models", "recognizer.onnx"
+    os.path.dirname(__file__), "..", "..", "models", "recog", "model.onnx"
 )
 
 # EMNIST ByClass labels 36-61 -> 'a'-'z' (ASCII 97-122).
@@ -34,11 +34,15 @@ def _get_session():
 
 
 def normalize_strokes_to_bitmap(strokes, size: int = 28) -> np.ndarray:
-    """Rasterize a letter's strokes into a 28x28 ink bitmap (0=bg, 1=ink)."""
+    """Rasterize a letter's strokes into a 28x28 ink bitmap (0=bg, 1=ink).
+
+    Each stroke is either a Stroke (has .points) or a plain list of (x,y,t).
+    """
     img = np.zeros((size, size), dtype=np.float32)
     xs, ys = [], []
     for s in strokes:
-        for (x, y, _t) in s:
+        pts = s.points if hasattr(s, "points") else s
+        for (x, y, _t) in pts:
             xs.append(x)
             ys.append(y)
     if not xs:
@@ -53,7 +57,8 @@ def normalize_strokes_to_bitmap(strokes, size: int = 28) -> np.ndarray:
 
     # draw each stroke as a polyline
     for s in strokes:
-        pts = [(int((x * scale + ox)), int((y * scale + oy))) for (x, y, _t) in s]
+        pts = s.points if hasattr(s, "points") else s
+        pts = [(int((x * scale + ox)), int((y * scale + oy))) for (x, y, _t) in pts]
         for (ax, ay), (bx, by) in zip(pts[:-1], pts[1:]):
             _draw_line(img, ax, ay, bx, by)
     return img

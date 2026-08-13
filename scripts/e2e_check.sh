@@ -7,7 +7,7 @@ pass=0; fail=0
 chk() { # chk <label> <expected> <actual>
   if [ "$2" == "$3" ]; then pass=$((pass+1)); echo "PASS  $1"; else fail=$((fail+1)); echo "FAIL  $1 (expected=$2 actual=$3)"; fi
 }
-chk "health"      "ok" "$(curl -s $B/api/health | grep -o '"ok"')"
+chk "health"      "ok" "$(curl -s $B/api/health | grep -o '"status":"ok"' | grep -o ok)"
 chk "root 200"    "200" "$(curl -s -o /dev/null -w '%{http_code}' $B/)"
 chk "generate_204" "204" "$(curl -s -o /dev/null -w '%{http_code}' $B/generate_204)"
 chk "spa fallback" "200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/html' $B/dashboard)"
