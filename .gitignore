@@ -10,9 +10,11 @@ web/dist/
 
 # Training artifacts (large / regenerable)
 data/raw/
+data/processed/
 ml/checkpoints/
 ml/*.pt
 ml/*.onnx
+ml/.playwright-profile/
 
 # uv
 .uv/
