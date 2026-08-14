@@ -261,19 +261,32 @@ def main():
     ap.add_argument("--login-only", action="store_true")
     ap.add_argument("--timeout", type=int, default=3600)
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--engine", choices=["chromium", "firefox"],
+                    default="chromium")
+    ap.add_argument("--profile", default=PROFILE,
+                    help="user-data-dir / Firefox profile directory to reuse")
     a = ap.parse_args()
 
-    os.makedirs(PROFILE, exist_ok=True)
     os.makedirs(DOWNLOADS, exist_ok=True)
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            PROFILE,
-            headless=a.headless,
-            args=["--no-sandbox"],
-            accept_downloads=True,
-            viewport={"width": 1280, "height": 900},
-        )
+        if a.engine == "firefox":
+            log(f"Launching Firefox with profile {a.profile} ...")
+            ctx = p.firefox.launch_persistent_context(
+                a.profile,
+                headless=a.headless,
+                accept_downloads=True,
+                viewport={"width": 1280, "height": 900},
+            )
+        else:
+            os.makedirs(a.profile, exist_ok=True)
+            ctx = p.chromium.launch_persistent_context(
+                a.profile,
+                headless=a.headless,
+                args=["--no-sandbox"],
+                accept_downloads=True,
+                viewport={"width": 1280, "height": 900},
+            )
         page = ctx.new_page()
 
         # capture downloads
